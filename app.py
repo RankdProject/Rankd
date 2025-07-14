@@ -9,7 +9,7 @@ st.set_page_config(page_title="Rankd", layout="wide")
 st.title("Rankd: Restaurant Ranking System")
 
 # --- API Key and Input ---
-api_key = st.text_input("AIzaSyC2wfTRCMmi1llIweCFW8opn4jYIupGrcI", type="password")
+api_key = st.text_input("Enter your Google API key", type="password")
 city = st.text_input("Enter city or area (e.g. Madrid, Spain)", value="Madrid, Spain")
 keywords_input = st.text_input("Enter search keywords (comma separated)", value="restaurants")
 limit = st.slider("Number of restaurants to fetch", 10, 60, 30)
@@ -22,6 +22,20 @@ excluded_chains = [
 
 def is_franchise(name):
     return any(chain.lower() in name.lower() for chain in excluded_chains)
+
+def map_price_label(level):
+    if level == 0 or pd.isna(level):
+        return "❔ Unknown"
+    elif level == 1:
+        return "💸 Budget-Friendly"
+    elif level == 2:
+        return "💵 Mid-Range"
+    elif level == 3:
+        return "💳 Premium"
+    elif level == 4:
+        return "👑 High-End"
+    else:
+        return "❔ Unknown"
 
 # --- Run search ---
 if st.button("Fetch and Rank Restaurants"):
@@ -52,15 +66,17 @@ if st.button("Fetch and Rank Restaurants"):
                 continue  # Skip franchise
             place_id = p.get("place_id")
 
-            # Get reviews using Place Details API
+            # Get reviews and price_level using Place Details API
             details_url = "https://maps.googleapis.com/maps/api/place/details/json"
             details_params = {
                 "place_id": place_id,
-                "fields": "review,rating,user_ratings_total",
+                "fields": "review,rating,user_ratings_total,price_level",
                 "key": api_key
             }
             details_res = requests.get(details_url, params=details_params).json()
-            reviews = details_res.get("result", {}).get("reviews", [])
+            result = details_res.get("result", {})
+            reviews = result.get("reviews", [])
+            price_level = result.get("price_level", None)
 
             # Compute sentiment score
             if reviews:
@@ -80,7 +96,8 @@ if st.button("Fetch and Rank Restaurants"):
                 "user_ratings_total": p.get("user_ratings_total"),
                 "lat": p["geometry"]["location"]["lat"],
                 "lng": p["geometry"]["location"]["lng"],
-                "sentiment_score": sentiment_score
+                "sentiment_score": sentiment_score,
+                "price_level": price_level
             })
 
         df = pd.DataFrame(data).dropna()
@@ -99,10 +116,20 @@ if st.button("Fetch and Rank Restaurants"):
                 df["sentiment_norm"] * 0.2
             )
 
-            top = df.sort_values("rankd_score", ascending=False).head(limit).reset_index(drop=True)
+            df = df.sort_values("rankd_score", ascending=False).head(limit).reset_index(drop=True)
+            df["price_label"] = df["price_level"].apply(map_price_label)
 
             st.subheader("🏆 Top Restaurants by Rankd Score (with Sentiment & Franchise Filter)")
-            st.dataframe(top[["name", "rating", "user_ratings_total", "sentiment_score", "rankd_score"]])
+            for i, row in df.iterrows():
+                st.markdown(f"""
+                ### {row['name']}
+                ⭐ {row['rating']} ({row['user_ratings_total']} reviews)  
+                Sentiment: {row['sentiment_score']:.2f} · Score: {row['rankd_score']:.2f}  
+                {row['price_label']}
+                """)
+                if row["rankd_score"] > 0.85 and row["price_level"] in [1, 2]:
+                    st.markdown("💎 **Best Value Pick**")
+                st.markdown("---")
 
             st.subheader("🗺️ Map View")
-            st.map(top.rename(columns={"lat": "latitude", "lng": "longitude"}))
+            st.map(df.rename(columns={"lat": "latitude", "lng": "longitude"}))
